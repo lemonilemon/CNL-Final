@@ -108,6 +108,7 @@ def compute_route(
     source: int,
     dest: int,
     init_D: np.ndarray | None = None,
+    init_tau: np.ndarray | None = None,
 ) -> RouteResult:
     if algorithm in ("physarum_classic", "physarum_classic_dijkstra"):
         solver = PhysarumSolver(graph, source, dest, variant="classic", extraction_policy="dijkstra")
@@ -140,7 +141,7 @@ def compute_route(
 
     elif algorithm == "aco":
         solver = ACOSolver(graph, source, dest, seed=42)
-        result = solver.solve()
+        result = solver.solve(init_tau=init_tau)
         return RouteResult(path=result.path, cost=result.cost, elapsed_seconds=result.elapsed_seconds,
                            converged=result.converged, iterations=result.iterations)
 

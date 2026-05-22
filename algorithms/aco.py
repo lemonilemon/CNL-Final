@@ -53,8 +53,8 @@ class ACOSolver:
         self.patience = patience
         self.rng = np.random.default_rng(seed)
 
-        # Map nodes to contiguous indices
-        self.nodes = list(graph.nodes())
+        # Map nodes to contiguous indices (sorted for cross-instance consistency)
+        self.nodes = sorted(list(graph.nodes()))
         self.node_to_idx = {n: i for i, n in enumerate(self.nodes)}
         self.N = len(self.nodes)
 
@@ -139,8 +139,11 @@ class ACOSolver:
                 self.tau[a, b] += deposit
                 self.tau[b, a] += deposit
 
-    def solve(self) -> ACOResult:
+    def solve(self, init_tau: np.ndarray | None = None) -> ACOResult:
         t0 = time.perf_counter()
+
+        if init_tau is not None:
+            self.tau = init_tau.copy()
 
         best_path: list[int] = []
         best_cost = float("inf")
@@ -185,3 +188,6 @@ class ACOSolver:
             elapsed_seconds=elapsed,
             best_cost_history=best_cost_history,
         )
+
+    def get_pheromone_matrix(self) -> np.ndarray:
+        return self.tau.copy()

@@ -135,23 +135,30 @@ def run_all(algorithms, node_counts, cost_strategies, trials, output_dir):
                 
             optimal_cost_deg = _dijkstra_optimal_cost(G2_base, src, dst)
             
-            physarum_solvers = {}
+            warm_solvers = {}
             for algo in algorithms:
                 if "physarum" in algo:
                     variant = "classic" if "classic" in algo else "improved"
                     policy = "greedy" if "greedy" in algo else "dijkstra"
                     solver = PhysarumSolver(G_base.copy(), src, dst, variant=variant, extraction_policy=policy)
                     solver.solve()
-                    physarum_solvers[algo] = solver
+                    warm_solvers[algo] = solver
 
             for algo in algorithms:
                 cnt += 1
                 print(f"[{cnt}/{total}] Adaptiveness: {algo} n={n} {strat}", flush=True)
                 try:
+                    warm_start_speedup_s = None
                     G2 = G2_base.copy()
-                    t0 = time.perf_counter()
-                    if "physarum" in algo and algo in physarum_solvers:
-                        solver = physarum_solvers[algo]
+                    
+                    if algo in warm_solvers:
+                        # Compute cold start time for comparison
+                        t_cold = time.perf_counter()
+                        compute_route(algo, G2.copy(), src, dst)
+                        cold_rt = time.perf_counter() - t_cold
+                        
+                        t0 = time.perf_counter()
+                        solver = warm_solvers[algo]
                         D_old = solver.D.copy()
                         u_idx = solver.node_to_idx[fail_u]
                         v_idx = solver.node_to_idx[fail_v]
@@ -160,9 +167,12 @@ def run_all(algorithms, node_counts, cost_strategies, trials, output_dir):
                         
                         solver2 = PhysarumSolver(G2, src, dst, variant=solver.variant, extraction_policy=solver.extraction_policy)
                         rr2 = solver2.solve(init_D=D_old)
+                        rt = time.perf_counter() - t0
+                        warm_start_speedup_s = cold_rt - rt
                     else:
+                        t0 = time.perf_counter()
                         rr2 = compute_route(algo, G2, src, dst)
-                    rt = time.perf_counter() - t0
+                        rt = time.perf_counter() - t0
                     
                     p2, c2 = rr2.path, rr2.cost
                     delay = compute_transmission_delay(G2, p2) if p2 else float("inf")
@@ -175,7 +185,8 @@ def run_all(algorithms, node_counts, cost_strategies, trials, output_dir):
                         execution_time_s=rt, path_cost=c2,
                         path_length=len(p2) if p2 else 0,
                         transmission_delay_ms=delay, throughput_mbps=tp,
-                        adaptiveness_s=rt, converged=rr2.converged, iterations=rr2.iterations,
+                        adaptiveness_s=rt, warm_start_speedup_s=warm_start_speedup_s, 
+                        converged=rr2.converged, iterations=rr2.iterations,
                         is_optimal=is_optimal,
                     ))
                 except Exception as e:
@@ -184,7 +195,7 @@ def run_all(algorithms, node_counts, cost_strategies, trials, output_dir):
     csv_path = os.path.join(output_dir, "results.csv")
     fields = ["algorithm","n_nodes","cost_strategy","execution_time_s","path_cost",
               "path_length","transmission_delay_ms","throughput_mbps","adaptiveness_s",
-              "converged","iterations","is_optimal"]
+              "warm_start_speedup_s","converged","iterations","is_optimal"]
     with open(csv_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields); w.writeheader()
         for r in results:
