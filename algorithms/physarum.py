@@ -39,7 +39,7 @@ class PhysarumSolver:
         dt: float = 0.05,
         max_iter: int = 500,
         epsilon: float = 1e-6,
-        patience: int = 10,
+        patience: int = 20,
         variant: str = "improved",
         record_history: bool = False,
         extraction_policy: str = "dijkstra", # Either dijkstra or greedy
@@ -97,25 +97,18 @@ class PhysarumSolver:
         with np.errstate(divide="ignore", invalid="ignore"):
             G = np.where(self.L > 0, self.D / self.L, 0.0)
 
-        A = np.zeros((N, N))
-        b = np.zeros(N)
+        # Vectorized Laplacian construction
+        A = -G.copy()
+        # Sum of rows for diagonal
+        np.fill_diagonal(A, G.sum(axis=1))
 
-        for i in range(N):
-            if i == self.dst_idx:
-                A[i, i] = 1.0
-                b[i] = 0.0  # reference pressure p_dest = 0
-            else:
-                # p_i * sum_j(G_ij) - sum_j(G_ij * p_j) = b_i
-                A[i, i] = np.sum(G[i])
-                for j in range(N):
-                    if G[i, j] > 0:
-                        A[i, j] = -G[i, j]
-                
-                # Inflow at source is constant I_0 = 1.0; 0 for all other non-sink nodes
-                if i == self.src_idx:
-                    b[i] = 1.0
-                else:
-                    b[i] = 0.0
+        # Apply boundary conditions (p_dest = 0)
+        A[self.dst_idx, :] = 0.0
+        A[self.dst_idx, self.dst_idx] = 1.0
+
+        b = np.zeros(self.N)
+        b[self.src_idx] = 1.0  # Inflow at source is 1.0
+        # b[self.dst_idx] is already 0.0
 
         A_sparse = csr_matrix(A)
         p = spsolve(A_sparse, b)
@@ -123,11 +116,11 @@ class PhysarumSolver:
 
     def _compute_flux(self, p: np.ndarray) -> np.ndarray:
         N = self.N
+        # Vectorized flux computation
+        p_diff = p[:, None] - p[None, :]
+        mask = (self.L > 0) & (self.D > 0)
         Q = np.zeros((N, N))
-        for i in range(N):
-            for j in range(N):
-                if self.L[i, j] > 0 and self.D[i, j] > 0:
-                    Q[i, j] = self.D[i, j] * (p[i] - p[j]) / self.L[i, j]
+        Q[mask] = self.D[mask] * p_diff[mask] / self.L[mask]
         return Q
 
     def _update_conductivity_classic(self, Q: np.ndarray) -> np.ndarray:
@@ -145,20 +138,22 @@ class PhysarumSolver:
         # Note that Q here is Q/L in our slide
         N = self.N
         abs_Q = np.abs(Q)
-        f_Q = abs_Q ** self.mu # mu = 1, then f(x) = |x|, as in our slide and paper
+        f_Q = abs_Q ** self.mu
 
         p_s = p[self.src_idx]
         p_e = p[self.dst_idx]
         pressure_diff = max(abs(p_s - p_e), 1e-12)
 
-        D_new = np.copy(self.D)
-        for i in range(N):
-            for j in range(N):
-                if self.L[i, j] > 0:
-                    local_pressure = abs(p[i] - p[j])
-                    energy_ratio = local_pressure / pressure_diff
-                    dD = f_Q[i, j] * (1.0 + energy_ratio) - self.decay * self.D[i, j]
-                    D_new[i, j] = max(self.D[i, j] + self.dt * dD, 0.0)
+        # Vectorized update
+        p_diff_local = np.abs(p[:, None] - p[None, :])
+        energy_ratio = p_diff_local / pressure_diff
+        
+        mask = self.L > 0
+        dD = np.zeros((N, N))
+        dD[mask] = f_Q[mask] * (1.0 + energy_ratio[mask]) - self.decay * self.D[mask]
+        
+        D_new = self.D + self.dt * dD
+        D_new = np.maximum(D_new, 0.0)
         return D_new
 
     def _extract_path_greedy(self) -> tuple[list[int], float]: # Optimal if solver converges

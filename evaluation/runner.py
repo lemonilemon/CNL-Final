@@ -59,7 +59,7 @@ def run_all(algorithms, node_counts, cost_strategies, trials, output_dir):
     
     # We will count total runs for progress printing
     total_single = len(cost_strategies) * len(node_counts) * trials * len(algorithms)
-    total_adapt = len(cost_strategies) * len(node_counts) * len(algorithms)
+    total_adapt = len(cost_strategies) * len(node_counts) * trials * len(algorithms)
     total = total_single + total_adapt
     cnt = 0
 
@@ -101,96 +101,96 @@ def run_all(algorithms, node_counts, cost_strategies, trials, output_dir):
                     except Exception as e:
                         print(f"  ERROR: {e}")
 
-    # 2. Run adaptiveness trials on the same random graph per condition
     print("\n--- Adaptiveness ---")
     for strat in cost_strategies:
         for n in node_counts:
-            seed = n * 1000
-            rng = np.random.default_rng(seed)
-            dg = DynamicGraph(n=n, connectivity=0.4, seed=seed)
-            G_base = enrich_graph_with_sim_attributes(dg.get_graph(), rng=rng)
-            _apply_cost_strategy(G_base, strat)
-            nodes = sorted(G_base.nodes())
-            src, dst = nodes[0], nodes[-1]
-            
-            # Find the failed link based on Dijkstra's path to ensure all algos fail the same link
-            try:
-                dj_res = DijkstraSolver(G_base, src, dst).solve()
-                path_dj = dj_res.path
-            except Exception:
-                path_dj = []
+            for t in range(trials):
+                seed = n * 1000 + t
+                rng = np.random.default_rng(seed)
+                dg = DynamicGraph(n=n, connectivity=0.4, seed=seed)
+                G_base = enrich_graph_with_sim_attributes(dg.get_graph(), rng=rng)
+                _apply_cost_strategy(G_base, strat)
+                nodes = sorted(G_base.nodes())
+                src, dst = nodes[0], nodes[-1]
                 
-            if not path_dj or len(path_dj) < 3:
-                # Skip this topology if there's no route or it's too short
+                # Find the failed link based on Dijkstra's path to ensure all algos fail the same link
+                try:
+                    dj_res = DijkstraSolver(G_base, src, dst).solve()
+                    path_dj = dj_res.path
+                except Exception:
+                    path_dj = []
+                    
+                if not path_dj or len(path_dj) < 3:
+                    # Skip this topology if there's no route or it's too short
+                    for algo in algorithms:
+                        cnt += 1
+                    continue
+                    
+                mid = len(path_dj) // 2
+                fail_u, fail_v = path_dj[mid], path_dj[mid+1]
+                
+                G2_base = G_base.copy()
+                if G2_base.has_edge(fail_u, fail_v):
+                    G2_base.remove_edge(fail_u, fail_v)
+                    
+                optimal_cost_deg = _dijkstra_optimal_cost(G2_base, src, dst)
+                
+                warm_solvers = {}
+                for algo in algorithms:
+                    if "physarum" in algo:
+                        variant = "classic" if "classic" in algo else "improved"
+                        policy = "greedy" if "greedy" in algo else "dijkstra"
+                        solver = PhysarumSolver(G_base.copy(), src, dst, variant=variant, extraction_policy=policy)
+                        solver.solve()
+                        warm_solvers[algo] = solver
+
                 for algo in algorithms:
                     cnt += 1
-                continue
-                
-            mid = len(path_dj) // 2
-            fail_u, fail_v = path_dj[mid], path_dj[mid+1]
-            
-            G2_base = G_base.copy()
-            if G2_base.has_edge(fail_u, fail_v):
-                G2_base.remove_edge(fail_u, fail_v)
-                
-            optimal_cost_deg = _dijkstra_optimal_cost(G2_base, src, dst)
-            
-            warm_solvers = {}
-            for algo in algorithms:
-                if "physarum" in algo:
-                    variant = "classic" if "classic" in algo else "improved"
-                    policy = "greedy" if "greedy" in algo else "dijkstra"
-                    solver = PhysarumSolver(G_base.copy(), src, dst, variant=variant, extraction_policy=policy)
-                    solver.solve()
-                    warm_solvers[algo] = solver
-
-            for algo in algorithms:
-                cnt += 1
-                print(f"[{cnt}/{total}] Adaptiveness: {algo} n={n} {strat}", flush=True)
-                try:
-                    warm_start_speedup_s = None
-                    G2 = G2_base.copy()
-                    
-                    if algo in warm_solvers:
-                        # Compute cold start time for comparison
-                        t_cold = time.perf_counter()
-                        compute_route(algo, G2.copy(), src, dst)
-                        cold_rt = time.perf_counter() - t_cold
+                    print(f"[{cnt}/{total}] Adaptiveness: {algo} n={n} {strat} trial={t+1}", flush=True)
+                    try:
+                        warm_start_speedup_s = None
+                        G2 = G2_base.copy()
                         
-                        t0 = time.perf_counter()
-                        solver = warm_solvers[algo]
-                        D_old = solver.D.copy()
-                        u_idx = solver.node_to_idx[fail_u]
-                        v_idx = solver.node_to_idx[fail_v]
-                        D_old[u_idx, v_idx] = 0.0
-                        D_old[v_idx, u_idx] = 0.0
+                        if algo in warm_solvers:
+                            # Compute cold start time for comparison
+                            t_cold = time.perf_counter()
+                            compute_route(algo, G2.copy(), src, dst)
+                            cold_rt = time.perf_counter() - t_cold
+                            
+                            t0 = time.perf_counter()
+                            solver = warm_solvers[algo]
+                            D_old = solver.D.copy()
+                            u_idx = solver.node_to_idx[fail_u]
+                            v_idx = solver.node_to_idx[fail_v]
+                            D_old[u_idx, v_idx] = 0.0
+                            D_old[v_idx, u_idx] = 0.0
+                            
+                            solver2 = PhysarumSolver(G2, src, dst, variant=solver.variant, extraction_policy=solver.extraction_policy)
+                            rr2 = solver2.solve(init_D=D_old)
+                            rt = time.perf_counter() - t0
+                            warm_start_speedup_s = cold_rt - rt
+                        else:
+                            t0 = time.perf_counter()
+                            rr2 = compute_route(algo, G2, src, dst)
+                            rt = time.perf_counter() - t0
                         
-                        solver2 = PhysarumSolver(G2, src, dst, variant=solver.variant, extraction_policy=solver.extraction_policy)
-                        rr2 = solver2.solve(init_D=D_old)
-                        rt = time.perf_counter() - t0
-                        warm_start_speedup_s = cold_rt - rt
-                    else:
-                        t0 = time.perf_counter()
-                        rr2 = compute_route(algo, G2, src, dst)
-                        rt = time.perf_counter() - t0
-                    
-                    p2, c2 = rr2.path, rr2.cost
-                    delay = compute_transmission_delay(G2, p2) if p2 else float("inf")
-                    tp = compute_bottleneck_throughput(G2, p2) if p2 else 0.0
-                    
-                    is_optimal = abs(c2 - optimal_cost_deg) < 1e-6 if c2 < float("inf") else False
-                    
-                    results.append(RoutingMetrics(
-                        algorithm=algo, n_nodes=n, cost_strategy=strat,
-                        execution_time_s=rt, path_cost=c2,
-                        path_length=len(p2) if p2 else 0,
-                        transmission_delay_ms=delay, throughput_mbps=tp,
-                        adaptiveness_s=rt, warm_start_speedup_s=warm_start_speedup_s, 
-                        converged=rr2.converged, iterations=rr2.iterations,
-                        is_optimal=is_optimal,
-                    ))
-                except Exception as e:
-                    print(f"  ERROR: {e}")
+                        p2, c2 = rr2.path, rr2.cost
+                        delay = compute_transmission_delay(G2, p2) if p2 else float("inf")
+                        tp = compute_bottleneck_throughput(G2, p2) if p2 else 0.0
+                        
+                        is_optimal = abs(c2 - optimal_cost_deg) < 1e-6 if c2 < float("inf") else False
+                        
+                        results.append(RoutingMetrics(
+                            algorithm=algo, n_nodes=n, cost_strategy=strat,
+                            execution_time_s=rt, path_cost=c2,
+                            path_length=len(p2) if p2 else 0,
+                            transmission_delay_ms=delay, throughput_mbps=tp,
+                            adaptiveness_s=rt, warm_start_speedup_s=warm_start_speedup_s, 
+                            converged=rr2.converged, iterations=rr2.iterations,
+                            is_optimal=is_optimal,
+                        ))
+                    except Exception as e:
+                        print(f"  ERROR: {e}")
                     
     csv_path = os.path.join(output_dir, "results.csv")
     fields = ["algorithm","n_nodes","cost_strategy","execution_time_s","path_cost",
