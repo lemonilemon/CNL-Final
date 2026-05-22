@@ -299,10 +299,43 @@ def plot_warm_start_speedup(df: "pd.DataFrame", output_dir: str, strategy: str =
     plt.savefig(os.path.join(output_dir, f"warm_start_speedup_{strategy}.png"), dpi=150)
     plt.close()
 
+def plot_route_flaps(df: "pd.DataFrame", output_dir: str, strategy: str = "hop_count"):
+    """Bar chart: average route flaps under transient link noise."""
+    sub = df[(df["cost_strategy"] == strategy) & (df["route_flaps"].notna())]
+    if sub.empty:
+        return
+        
+    fig, ax = plt.subplots(figsize=(10, 6))
+    algorithms = sub["algorithm"].unique()
+    node_counts = sorted(sub["n_nodes"].unique())
+    x = np.arange(len(node_counts))
+    width = 0.8 / len(algorithms)
+
+    for i, algo in enumerate(algorithms):
+        means = []
+        for n in node_counts:
+            subset = sub[(sub["algorithm"] == algo) & (sub["n_nodes"] == n)]
+            if subset.empty:
+                means.append(0.0)
+            else:
+                means.append(subset["route_flaps"].mean())
+        ax.bar(x + i * width, means, width, label=LABELS.get(algo, algo),
+               color=COLORS.get(algo, f"C{i}"), alpha=0.85)
+
+    ax.set_xlabel("Number of Nodes")
+    ax.set_ylabel("Average Route Flaps (over 50 noise steps)")
+    ax.set_title(f"Route Stability / Flapping under Noise ({strategy})")
+    ax.set_xticks(x + width * (len(algorithms) - 1) / 2)
+    ax.set_xticklabels(node_counts)
+    
+    ax.legend()
+    ax.grid(axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, f"route_flaps_{strategy}.png"), dpi=150)
+    plt.close()
 
 
 def generate_all_plots(csv_path: str, output_dir: str):
-    """Generate all plots for all cost strategies."""
     os.makedirs(output_dir, exist_ok=True)
     df = load_results(csv_path)
     strategies = df["cost_strategy"].unique()
@@ -316,6 +349,7 @@ def generate_all_plots(csv_path: str, output_dir: str):
         plot_optimality(df, output_dir, s)
         plot_adaptiveness_iterations(df, output_dir, s)
         plot_warm_start_speedup(df, output_dir, s)
+        plot_route_flaps(df, output_dir, s)
     print(f"All plots saved to {output_dir}")
 
 

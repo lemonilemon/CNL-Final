@@ -31,6 +31,7 @@ class RoutingMetrics:
     throughput_mbps: float
     adaptiveness_s: float | None = None
     warm_start_speedup_s: float | None = None
+    route_flaps: int | None = None
     converged: bool | None = None
     iterations: int | None = None
     is_optimal: bool | None = None

@@ -10,7 +10,13 @@ Bio-inspired routing for Software-Defined Networks using the *Physarum polycepha
 
 - Tests should be ignorable, but I leave them as it is anyway.
 
-- ACO is NOT warm-started because empirical testing shows the concentrated pheromone from the old path creates a bias trap that degrades path quality (cold start found better paths in 19/24 cases).
+- How to deal with ACO (I think simply explain way this happen is enough? Since this is not our main topic)
+    - ACO is NOT warm-started because empirical testing shows the concentrated pheromone from the old path creates a bias trap that degrades path quality (cold start found better paths in 19/24 cases).
+    - ACO has worse stability than Dijkstra
+
+- Even when warm-started, Dijkstra outperforms out physarum on adaptive time.
+One way is to try accelerating the implementation, but I think there is little hope since the algorithm is around 2 order behind.
+We may simply say this is because the time complexity of dijkstra is by far better (alghough I have claimed in the proposal that physarum will outperform this metric).
 
 ## Project Structure
 

@@ -60,10 +60,10 @@ def run_all(algorithms, node_counts, cost_strategies, trials, output_dir):
     # We will count total runs for progress printing
     total_single = len(cost_strategies) * len(node_counts) * trials * len(algorithms)
     total_adapt = len(cost_strategies) * len(node_counts) * trials * len(algorithms)
-    total = total_single + total_adapt
+    total_stability = len(cost_strategies) * len(node_counts) * trials * len(algorithms)
+    total = total_single + total_adapt + total_stability
     cnt = 0
 
-    # 1. Run single trials on the same random graph per condition and trial
     for strat in cost_strategies:
         for n in node_counts:
             for t in range(trials):
@@ -191,11 +191,76 @@ def run_all(algorithms, node_counts, cost_strategies, trials, output_dir):
                         ))
                     except Exception as e:
                         print(f"  ERROR: {e}")
+
+    print("\n--- Route Stability (Transient Noise) ---")
+    for strat in cost_strategies:
+        for n in node_counts:
+            for t in range(trials):
+                seed = n * 1000 + t
+                rng = np.random.default_rng(seed)
+                G_base = enrich_graph_with_sim_attributes(mesh_graph(n=n, connectivity=0.3, seed=seed), rng=rng)
+                _apply_cost_strategy(G_base, strat)
+                nodes = sorted(G_base.nodes())
+                src, dst = nodes[0], nodes[-1]
+                
+                # Check path exists
+                try:
+                    path_dj = DijkstraSolver(G_base, src, dst).solve().path
+                except Exception:
+                    path_dj = []
+                if not path_dj:
+                    for algo in algorithms: cnt += 1
+                    continue
+                
+                steps = 50
+                noise_std = 0.2
+                
+                # Same noisy graph for all algorithm
+                noisy_graphs = []
+                for _ in range(steps):
+                    G_noisy = G_base.copy()
+                    for u, v in G_noisy.edges():
+                        base_w = G_base[u][v].get("weight", 1.0)
+                        noise = rng.normal(0, noise_std)
+                        G_noisy[u][v]["weight"] = max(0.1, base_w + noise)
+                    noisy_graphs.append(G_noisy)
+
+                for algo in algorithms:
+                    cnt += 1
+                    print(f"[{cnt}/{total}] Stability: {algo} n={n} {strat} trial={t+1}", flush=True)
+                    
+                    try:
+                        paths = []
+                        if "physarum" in algo:
+                            variant = "classic" if "classic" in algo else "improved"
+                            policy = "greedy" if "greedy" in algo else "dijkstra"
+                            D_memory = None
+                            for step in range(steps):
+                                solver = PhysarumSolver(noisy_graphs[step], src, dst, variant=variant, extraction_policy=policy, max_iter=10, patience=999)
+                                res = solver.solve(init_D=D_memory)
+                                D_memory = solver.get_all_conductivities()
+                                paths.append(res.path)
+                        else:
+                            for step in range(steps):
+                                res = compute_route(algo, noisy_graphs[step], src, dst)
+                                paths.append(res.path)
+                        
+                        # Count flaps
+                        flaps = sum(1 for i in range(1, len(paths)) if paths[i] != paths[i-1])
+                        
+                        results.append(RoutingMetrics(
+                            algorithm=algo, n_nodes=n, cost_strategy=strat,
+                            execution_time_s=0.0, path_cost=0.0, path_length=0,
+                            transmission_delay_ms=0.0, throughput_mbps=0.0,
+                            route_flaps=flaps,
+                        ))
+                    except Exception as e:
+                        print(f"  ERROR: {e}")
                     
     csv_path = os.path.join(output_dir, "results.csv")
     fields = ["algorithm","n_nodes","cost_strategy","execution_time_s","path_cost",
               "path_length","transmission_delay_ms","throughput_mbps","adaptiveness_s",
-              "warm_start_speedup_s","converged","iterations","is_optimal"]
+              "warm_start_speedup_s","route_flaps","converged","iterations","is_optimal"]
     with open(csv_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fields); w.writeheader()
         for r in results:
