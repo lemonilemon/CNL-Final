@@ -335,6 +335,67 @@ def plot_route_flaps(df: "pd.DataFrame", output_dir: str, strategy: str = "hop_c
     plt.close()
 
 
+# ---------------------------------------------------------------------------
+# Multipath load-balancing plots (reads results/loadbalance.csv)
+# ---------------------------------------------------------------------------
+
+LB_COLORS = {
+    "dijkstra_single": "#3498db",
+    "ecmp": "#9b59b6",
+    "physarum": "#2ecc71",
+    "aco": "#f39c12",
+}
+LB_LABELS = {
+    "dijkstra_single": "Dijkstra (single-path)",
+    "ecmp": "ECMP (equal-split)",
+    "physarum": "Physarum (WCMP)",
+    "aco": "ACO (pheromone-weighted)",
+}
+LB_ORDER = ["dijkstra_single", "ecmp", "physarum", "aco"]
+
+
+def _lb_line(df, output_dir, topology, ycol, ylabel, title, fname, pct=False, ideal=False):
+    sub = df[df["topology"] == topology]
+    if sub.empty:
+        return
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for algo in [a for a in LB_ORDER if a in sub["method"].unique()]:
+        data = sub[sub["method"] == algo]
+        g = data.groupby("offered_load")[ycol].mean()
+        y = g.values * (100.0 if pct else 1.0)
+        ax.plot(g.index, y, "o-", label=LB_LABELS.get(algo, algo),
+                color=LB_COLORS.get(algo), linewidth=2, markersize=6)
+    if ideal:
+        lim = sub["offered_load"].max()
+        ax.plot([0, lim], [0, lim], "k--", alpha=0.5, linewidth=1,
+                label="Ideal (no loss)")
+    ax.set_xlabel("Offered Load (Mbps, total across flows)")
+    ax.set_ylabel(ylabel)
+    ax.set_title(f"{title} — {topology}")
+    ax.legend()
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, fname), dpi=150)
+    plt.close()
+
+
+def generate_loadbalance_plots(csv_path: str, output_dir: str):
+    os.makedirs(output_dir, exist_ok=True)
+    df = load_results(csv_path)
+    for topo in df["topology"].unique():
+        print(f"Generating load-balancing plots for topology: {topo}")
+        _lb_line(df, output_dir, topo, "aggregate_throughput",
+                 "Aggregate Throughput (Mbps)", "Aggregate Throughput vs Offered Load",
+                 f"lb_throughput_{topo}.png", ideal=True)
+        _lb_line(df, output_dir, topo, "packet_loss",
+                 "Packet Loss (%)", "Packet Loss vs Offered Load",
+                 f"lb_loss_{topo}.png", pct=True)
+        _lb_line(df, output_dir, topo, "util_imbalance",
+                 "Link-Utilization Imbalance (stddev)", "Load Imbalance vs Offered Load",
+                 f"lb_imbalance_{topo}.png")
+    print(f"Load-balancing plots saved to {output_dir}")
+
+
 def generate_all_plots(csv_path: str, output_dir: str):
     os.makedirs(output_dir, exist_ok=True)
     df = load_results(csv_path)
@@ -357,8 +418,14 @@ def main():
     p = argparse.ArgumentParser(description="Plot benchmark results")
     p.add_argument("--input", default="results/results.csv")
     p.add_argument("--output", default="results/figures")
+    p.add_argument("--loadbalance", action="store_true",
+                   help="plot load-balancing results (input defaults to results/loadbalance.csv)")
     a = p.parse_args()
-    generate_all_plots(a.input, a.output)
+    if a.loadbalance:
+        inp = a.input if a.input != "results/results.csv" else "results/loadbalance.csv"
+        generate_loadbalance_plots(inp, a.output)
+    else:
+        generate_all_plots(a.input, a.output)
 
 if __name__ == "__main__":
     main()
