@@ -138,13 +138,12 @@ class PhysarumSolver:
         # Note that Q here is Q/L in our slide
         N = self.N
         abs_Q = np.abs(Q)
-        f_Q = abs_Q ** self.mu
+        f_Q = abs_Q ** self.mu # mu = 1, then f(x) = |x|, as in our slide and paper
 
         p_s = p[self.src_idx]
         p_e = p[self.dst_idx]
         pressure_diff = max(abs(p_s - p_e), 1e-12)
 
-        # Vectorized update
         p_diff_local = np.abs(p[:, None] - p[None, :])
         energy_ratio = p_diff_local / pressure_diff
         
