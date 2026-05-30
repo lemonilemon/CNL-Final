@@ -33,10 +33,29 @@ from topology.datacenter_topo import TopoMeta
 try:
     from mininet.net import Mininet
     from mininet.node import OVSSwitch
-    from mininet.link import TCLink
+    from mininet.link import TCLink, TCIntf
     MININET_AVAILABLE = True
 except ImportError:  # teammates on macOS / Windows
     MININET_AVAILABLE = False
+
+
+if MININET_AVAILABLE:
+    # Mininet shapes links with HTB, whose per-class quantum = rate / r2q
+    # (r2q defaults to 10). For any link faster than ~16 Mbit/s that quantum
+    # exceeds the kernel's 200000-byte limit, so `tc` emits a (harmless,
+    # auto-clamped) "quantum ... is big" warning — once per link, very noisy.
+    # Raising r2q on the HTB qdisc keeps the quantum in the kernel's
+    # [1000, 200000] window for our 10–1000 Mbit links and silences it. We
+    # inject r2q into Mininet's qdisc-add command via a thin tc() wrapper.
+    _HTB_R2Q = 1000
+    _orig_tcintf_tc = TCIntf.tc
+
+    def _tc_with_r2q(self, cmd, tc="tc"):
+        if "handle 5:0 htb default 1" in cmd and "r2q" not in cmd:
+            cmd = cmd.replace("htb default 1", f"htb default 1 r2q {_HTB_R2Q}")
+        return _orig_tcintf_tc(self, cmd, tc)
+
+    TCIntf.tc = _tc_with_r2q
 
 
 def sw_name(node: int) -> str:
