@@ -396,6 +396,77 @@ def generate_loadbalance_plots(csv_path: str, output_dir: str):
     print(f"Load-balancing plots saved to {output_dir}")
 
 
+# ---------------------------------------------------------------------------
+# Phase-2 testbed plots (Mininet+iperf): results/phase2_udp.csv, phase2_tcp.csv
+# Overlays the measured points on the Phase-1 flow-level predictions.
+# ---------------------------------------------------------------------------
+
+def _phase2_overlay(udp, lb, output_dir, topology, ycol_p2, ycol_p1,
+                    ylabel, title, fname, pct=False):
+    sub = udp[udp["topology"] == topology]
+    if sub.empty:
+        return
+    lb_sub = lb[lb["topology"] == topology] if lb is not None else None
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for algo in [a for a in LB_ORDER if a in sub["method"].unique()]:
+        color = LB_COLORS.get(algo)
+        d = sub[sub["method"] == algo].groupby("offered_total_mbps")[ycol_p2].mean()
+        y = d.values * (100.0 if pct else 1.0)
+        ax.plot(d.index, y, "o-", color=color, linewidth=2, markersize=6,
+                label=f"{LB_LABELS.get(algo, algo)} (measured)")
+        if lb_sub is not None and not lb_sub.empty:
+            p = lb_sub[lb_sub["method"] == algo].groupby("offered_load")[ycol_p1].mean()
+            yp = p.values * (100.0 if pct else 1.0)
+            ax.plot(p.index, yp, "--", color=color, alpha=0.5, linewidth=1.5,
+                    label=f"{LB_LABELS.get(algo, algo)} (predicted)")
+    ax.set_xlabel("Offered Load (Mbps, total across flows)")
+    ax.set_ylabel(ylabel)
+    ax.set_title(f"{title} — {topology} (Phase 2 vs Phase 1)")
+    ax.legend(fontsize=8)
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, fname), dpi=150)
+    plt.close()
+
+
+def _phase2_tcp_bars(tcp, output_dir, topology):
+    sub = tcp[tcp["topology"] == topology]
+    if sub.empty:
+        return
+    algos = [a for a in LB_ORDER if a in sub["method"].unique()]
+    means = [sub[sub["method"] == a]["throughput_mbps"].mean() for a in algos]
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.bar([LB_LABELS.get(a, a) for a in algos], means,
+           color=[LB_COLORS.get(a) for a in algos])
+    ax.set_ylabel("Aggregate TCP Throughput (Mbps)")
+    ax.set_title(f"Saturating TCP Throughput — {topology}")
+    ax.grid(alpha=0.3, axis="y")
+    plt.setp(ax.get_xticklabels(), rotation=15, ha="right")
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, f"phase2_tcp_{topology}.png"), dpi=150)
+    plt.close()
+
+
+def generate_phase2_plots(udp_csv: str, tcp_csv: str, lb_csv: str, output_dir: str):
+    os.makedirs(output_dir, exist_ok=True)
+    udp = load_results(udp_csv)
+    tcp = load_results(tcp_csv) if os.path.exists(tcp_csv) else None
+    lb = load_results(lb_csv) if os.path.exists(lb_csv) else None
+    for topo in udp["topology"].unique():
+        print(f"Generating Phase-2 plots for topology: {topo}")
+        _phase2_overlay(udp, lb, output_dir, topo,
+                        "throughput_mbps", "aggregate_throughput",
+                        "Aggregate Throughput (Mbps)", "UDP Aggregate Throughput",
+                        f"phase2_throughput_{topo}.png")
+        _phase2_overlay(udp, lb, output_dir, topo,
+                        "packet_loss", "packet_loss",
+                        "Packet Loss (%)", "UDP Packet Loss",
+                        f"phase2_loss_{topo}.png", pct=True)
+        if tcp is not None:
+            _phase2_tcp_bars(tcp, output_dir, topo)
+    print(f"Phase-2 plots saved to {output_dir}")
+
+
 def generate_all_plots(csv_path: str, output_dir: str):
     os.makedirs(output_dir, exist_ok=True)
     df = load_results(csv_path)
@@ -420,8 +491,14 @@ def main():
     p.add_argument("--output", default="results/figures")
     p.add_argument("--loadbalance", action="store_true",
                    help="plot load-balancing results (input defaults to results/loadbalance.csv)")
+    p.add_argument("--phase2", action="store_true",
+                   help="plot Phase-2 Mininet results (results/phase2_udp.csv + phase2_tcp.csv), "
+                        "overlaid on Phase-1 predictions (results/loadbalance.csv)")
     a = p.parse_args()
-    if a.loadbalance:
+    if a.phase2:
+        generate_phase2_plots("results/phase2_udp.csv", "results/phase2_tcp.csv",
+                              "results/loadbalance.csv", a.output)
+    elif a.loadbalance:
         inp = a.input if a.input != "results/results.csv" else "results/loadbalance.csv"
         generate_loadbalance_plots(inp, a.output)
     else:
