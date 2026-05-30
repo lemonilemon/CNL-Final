@@ -17,15 +17,17 @@ import numpy as np
 from scipy.sparse import csr_matrix
 from scipy.sparse.linalg import spsolve
 
+
 @dataclass
 class PhysarumResult:
-    path: list[int] # Node sequence from source to destination
-    cost: float # Sum of edge weights
+    path: list[int]  # Node sequence from source to destination
+    cost: float  # Sum of edge weights
     iterations: int
     converged: bool
     elapsed_seconds: float
     conductivity_history: list[np.ndarray] = field(default_factory=list)
-    variant: str = "classic" # Either classic or improved
+    variant: str = "classic"  # Either classic or improved
+
 
 class PhysarumSolver:
 
@@ -34,7 +36,7 @@ class PhysarumSolver:
         graph: nx.Graph,
         source: int,
         dest: int,
-        mu: float = 1.0, # Make f(x) = |x|
+        mu: float = 1.0,  # Make f(x) = |x|
         decay: float = 0.1,
         dt: float = 0.05,
         max_iter: int = 500,
@@ -42,7 +44,7 @@ class PhysarumSolver:
         patience: int = 20,
         variant: str = "improved",
         record_history: bool = False,
-        extraction_policy: str = "dijkstra", # Either dijkstra or greedy
+        extraction_policy: str = "dijkstra",  # Either dijkstra or greedy
     ):
         if source == dest:
             raise ValueError("source and dest must differ")
@@ -71,7 +73,7 @@ class PhysarumSolver:
 
         self._build_matrices()
 
-    def _build_matrices(self) -> None: # Initialize parameter and construct graph
+    def _build_matrices(self) -> None:  # Initialize parameter and construct graph
         N = self.N
         self.L = np.zeros((N, N))  # length / weight
         self.D = np.zeros((N, N))  # conductivity
@@ -126,15 +128,13 @@ class PhysarumSolver:
     def _update_conductivity_classic(self, Q: np.ndarray) -> np.ndarray:
         # Note that Q here is Q/L in our slide
         abs_Q = np.abs(Q)
-        f_Q = abs_Q ** self.mu  # mu = 1, then f(x) = |x|, as in our slide and paper
+        f_Q = abs_Q**self.mu  # mu = 1, then f(x) = |x|, as in our slide and paper
         dD = f_Q - self.decay * self.D
         D_new = self.D + self.dt * dD
         D_new = np.maximum(D_new, 0.0)
         return D_new
 
-    def _update_conductivity_improved(
-        self, Q: np.ndarray, p: np.ndarray
-    ) -> np.ndarray:
+    def _update_conductivity_improved(self, Q: np.ndarray, p: np.ndarray) -> np.ndarray:
         # Note that Q here is Q/L in our slide
         N = self.N
         abs_Q = np.abs(Q)
@@ -146,16 +146,18 @@ class PhysarumSolver:
 
         p_diff_local = np.abs(p[:, None] - p[None, :])
         energy_ratio = p_diff_local / pressure_diff
-        
+
         mask = self.L > 0
         dD = np.zeros((N, N))
         dD[mask] = f_Q[mask] * (1.0 + energy_ratio[mask]) - self.decay * self.D[mask]
-        
+
         D_new = self.D + self.dt * dD
         D_new = np.maximum(D_new, 0.0)
         return D_new
 
-    def _extract_path_greedy(self) -> tuple[list[int], float]: # Optimal if solver converges
+    def _extract_path_greedy(
+        self,
+    ) -> tuple[list[int], float]:  # Optimal if solver converges
         """
         Greedily trace a path from source to dest by selecting the neighbor
         with the highest conductivity at each step.
@@ -163,14 +165,14 @@ class PhysarumSolver:
         current = self.source
         visited = {current}
         path = [current]
-        
+
         while current != self.dest:
             curr_idx = self.node_to_idx[current]
             neighbors = list(self.graph.neighbors(current))
-            
+
             best_neighbor = None
             best_conductivity = -1.0
-            
+
             for nbr in neighbors:
                 if nbr not in visited:
                     nbr_idx = self.node_to_idx[nbr]
@@ -178,14 +180,14 @@ class PhysarumSolver:
                     if cond > best_conductivity:
                         best_conductivity = cond
                         best_neighbor = nbr
-            
+
             if best_neighbor is None or best_conductivity < 1e-5:
                 return [], float("inf")
-                
+
             current = best_neighbor
             visited.add(current)
             path.append(current)
-            
+
         cost = 0.0
         for a, b in zip(path[:-1], path[1:]):
             i, j = self.node_to_idx[a], self.node_to_idx[b]
@@ -233,7 +235,7 @@ class PhysarumSolver:
 
             p = self._solve_pressure()
             Q = self._compute_flux(p)
-            
+
             if self.variant == "classic":
                 D_new = self._update_conductivity_classic(Q)
             else:
@@ -274,3 +276,46 @@ class PhysarumSolver:
 
     def get_all_conductivities(self) -> np.ndarray:
         return self.D.copy()
+
+    def extract_multipath_split(
+        self, threshold: float = 1e-4
+    ) -> dict[int, dict[int, float]]:
+        """
+        Export the steady-state flow as a per-node multipath split table.
+
+        Instead of collapsing the conductivity field to a single path, we read
+        the steady-state flux Q_ij = D_ij * (p_i - p_j) / L_ij (the current on
+        each edge) and, at every node, split outgoing flow across neighbors in
+        proportion to the *positive outgoing* flux (current flowing toward the
+        sink).
+
+        Because pressure is a scalar potential (p_src highest, p_dest = 0),
+        current always flows down the gradient, so the result is a loop-free
+        flow DAG that conserves flow at every node (Kirchhoff). This only yields
+        genuine multipath when run in the sublinear regime (mu < 1); with mu = 1
+        and full convergence the flux concentrates on a single tube.
+
+        Returns
+        -------
+        dict[node, dict[next_hop, fraction]]
+            Fractions at each node sum to 1.0. The destination is absent.
+        """
+        p = self._solve_pressure()
+        Q = self._compute_flux(p)  # Q[i, j] > 0 means current flows i -> j
+
+        split: dict[int, dict[int, float]] = {}
+        for node in self.nodes:
+            if node == self.dest:
+                continue
+            i = self.node_to_idx[node]
+            outs: dict[int, float] = {}
+            total = 0.0
+            for nbr in self.graph.neighbors(node):
+                j = self.node_to_idx[nbr]
+                q = Q[i, j]
+                if q > threshold:
+                    outs[nbr] = q
+                    total += q
+            if total > 0:
+                split[node] = {nb: q / total for nb, q in outs.items()}
+        return split
